@@ -1,0 +1,19 @@
+[project]
+name = "lago-agrio-endline"
+version = "0.1.0"
+description = "Ingesta + dashboard de la línea de salida AMA en Lago Agrio (Typeform → Supabase → Streamlit)"
+requires-python = ">=3.11"
+dependencies = [
+    "httpx>=0.27",
+    "streamlit>=1.36",
+    "streamlit-autorefresh>=1.0.1",
+    "pandas>=2.2",
+    "plotly>=5.22",
+]
+
+[project.optional-dependencies]
+dev = ["ruff>=0.5"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
