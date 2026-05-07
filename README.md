@@ -1,7 +1,9 @@
 # Lago Agrio · Línea de salida AMA
 
-Dashboard en vivo del endline AMA en Lago Agrio. Lee directo de la Typeform API
-con cache de 30s — sin base de datos, sin webhooks. Estilo Bloomberg Terminal.
+**🚀 Dashboard en vivo:** https://lago-agrio-endline-pcm4jbzyvmekla63l4lwl8.streamlit.app/
+
+Lee directo de la Typeform API con cache de 30s — sin base de datos, sin webhooks.
+Estilo Bloomberg Terminal.
 
 ```
 Typeform API  ←──poll cache 30s──  Streamlit
