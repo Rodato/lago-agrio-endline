@@ -140,6 +140,15 @@ hr {
 [data-testid="stSelectbox"] svg,
 [data-testid="stDateInput"] svg,
 button[data-testid="stBaseButton-minimal"] svg { display: none !important; }
+
+/* Restaurar la fuente de los iconos Material de Streamlit. El override monospace
+   global de arriba los pisaba y los mostraba como texto (p. ej. la flecha de
+   colapsar el sidebar salía como "keyboard_double_arrow_left"). */
+.stApp [data-testid="stIconMaterial"],
+span.material-symbols-rounded,
+span.material-symbols-outlined {
+    font-family: 'Material Symbols Rounded', 'Material Symbols Outlined' !important;
+}
 </style>
 """
 

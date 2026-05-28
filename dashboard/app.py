@@ -412,7 +412,9 @@ with tab2:
                     margin=dict(l=0, r=60, t=10, b=40),
                 )
             )
-            st.plotly_chart(fig, use_container_width=True)
+            # Contenedor de altura fija → scroll vertical cuando hay muchas preguntas.
+            with st.container(height=520):
+                st.plotly_chart(fig, use_container_width=True)
 
             st.divider()
 
