@@ -1,6 +1,6 @@
 """Tema visual estilo Bloomberg Terminal — fondo negro + acento amber.
 
-Inspirado en `~/Desktop/Dev/AMA/Bot_monitoring/src/app.py`.
+Inspirado en `~/Documents/Dev/AMA/Bot_monitoring/src/app.py`.
 Expone:
     inject_css()      → inyecta el CSS global
     base_layout(**kw) → layout base para Plotly
@@ -177,22 +177,27 @@ def base_layout(**kwargs) -> dict:
     return base
 
 
-def html_table(df, col_defs, medal_col: int | None = None) -> str:
+def html_table(
+    df, col_defs, medal_col: int | None = None, max_height: int | None = None
+) -> str:
     """Render DataFrame as Bloomberg-style HTML table.
 
     col_defs: list of (attr_name, header_label, align)
     medal_col: índice (0-based) de la columna numérica que tintamos amber para top 3.
+    max_height: si se da, la tabla queda en un contenedor scrolleable de esa altura (px)
+                con el header fijo (sticky), en vez de estirar la página.
     """
     medal_colors = {1: AMBER, 2: "#888888", 3: "#5A4000"}
+    th_sticky = "position:sticky;top:0;background:#0D0D0D;z-index:2;" if max_height else ""
     thead = (
-        '<th style="padding:5px 10px;color:#FFB300;font-size:0.6rem;letter-spacing:0.12em;'
-        'border-bottom:1px solid #2A2A2A;white-space:nowrap">#</th>'
+        f'<th style="padding:5px 10px;color:#FFB300;font-size:0.6rem;letter-spacing:0.12em;'
+        f'border-bottom:1px solid #2A2A2A;white-space:nowrap;{th_sticky}">#</th>'
     )
     for _, hdr, align in col_defs:
         thead += (
             f'<th style="padding:5px 10px;color:#FFB300;font-size:0.6rem;'
             f'letter-spacing:0.12em;border-bottom:1px solid #2A2A2A;'
-            f'text-align:{align};white-space:nowrap">{hdr}</th>'
+            f'text-align:{align};white-space:nowrap;{th_sticky}">{hdr}</th>'
         )
 
     tbody = ""
@@ -212,9 +217,10 @@ def html_table(df, col_defs, medal_col: int | None = None) -> str:
             )
         tbody += f"<tr>{tr}</tr>"
 
+    height_css = f"max-height:{max_height}px;overflow-y:auto;" if max_height else ""
     return (
         '<div style="font-family:\'IBM Plex Mono\',monospace;font-size:0.72rem;'
-        'overflow-x:auto;background:#0D0D0D;border:1px solid #1E1E1E;padding:4px">'
+        f'overflow-x:auto;{height_css}background:#0D0D0D;border:1px solid #1E1E1E;padding:4px">'
         f'<table style="width:100%;border-collapse:collapse">'
         f'<thead><tr>{thead}</tr></thead>'
         f'<tbody>{tbody}</tbody>'

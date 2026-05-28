@@ -1,7 +1,8 @@
-"""Dashboard de la línea de salida AMA Lago Agrio.
+"""Dashboard de la encuesta de línea de salida del Programa AMA.
 
 Estilo Bloomberg Terminal — fondo negro, acento amber.
-Una sola página con tabs: AVANCE y COMPLETITUD.
+Dos fuentes seleccionables (Typeform / KoboToolbox) que comparten los mismos
+tabs: AVANCE y COMPLETITUD.
 """
 
 from __future__ import annotations
@@ -17,13 +18,16 @@ from streamlit_autorefresh import st_autorefresh
 
 sys.path.insert(0, str(Path(__file__).parent))
 
+from lib import kobo
 from lib.completion import completion_by_question
 from lib.db import get_answers, get_form_definition, get_responses
 from lib.theme import AMBER, CHART_COLORS, CYAN, GREEN, RED, base_layout, html_table, inject_css
 
 
+APP_TITLE = "ENCUESTA DE LÍNEA SALIDA · PROGRAMA AMA"
+
 st.set_page_config(
-    page_title="AMA · LÍNEA DE SALIDA",
+    page_title="AMA · ENCUESTA DE SALIDA",
     page_icon="▣",
     layout="wide",
 )
@@ -31,41 +35,88 @@ st.set_page_config(
 inject_css()
 st_autorefresh(interval=30 * 1000, key="global_refresh")
 
-# ── Config ────────────────────────────────────────────────────────────────────
-
-FORM_ID = st.secrets.get("FORM_ID")
-if not FORM_ID:
-    st.error("Falta `FORM_ID` en `.streamlit/secrets.toml`.")
-    st.stop()
-
-form_def = get_form_definition(FORM_ID)
-if form_def is None:
-    st.error("No encontré ese FORM_ID en Typeform. Verifica el ID y el token.")
-    st.stop()
+tz = ZoneInfo("America/Bogota")
 
 
-# ── Datos ─────────────────────────────────────────────────────────────────────
+# ── Selector de fuente ──────────────────────────────────────────────────────────
 
-responses = get_responses(FORM_ID)
-answers = get_answers(FORM_ID)
+with st.sidebar:
+    st.markdown("### ▣ FUENTE")
+    fuente = st.radio(
+        "FUENTE DE DATOS",
+        ["TYPEFORM", "KOBO"],
+        label_visibility="collapsed",
+    )
+
+
+# ── Carga de datos según la fuente ──────────────────────────────────────────────
+# Cada rama deja: `responses` (df con response_id, submitted_at y hidden_* opcionales),
+# `source_title`, `goal_total` y `compute_comp(df)` → df [pregunta, respondidas, total, pct].
+
+if fuente == "TYPEFORM":
+    FORM_ID = st.secrets.get("FORM_ID")
+    if not FORM_ID:
+        st.error("Falta `FORM_ID` en `.streamlit/secrets.toml`.")
+        st.stop()
+    form_def = get_form_definition(FORM_ID)
+    if form_def is None:
+        st.error("No encontré ese FORM_ID en Typeform. Verifica el ID y el token.")
+        st.stop()
+    responses = get_responses(FORM_ID)
+    answers = get_answers(FORM_ID)
+    source_title = form_def.get("title") or "Encuesta de salida (Typeform)"
+    goal_total = (st.secrets.get("goals") or {}).get("total")
+
+    def compute_comp(df):
+        return completion_by_question(form_def, answers, df["response_id"].tolist())
+
+else:  # KOBO
+    KOBO_UID = st.secrets.get("KOBO_ASSET_UID")
+    if not KOBO_UID or not st.secrets.get("KOBO_TOKEN"):
+        st.error("Faltan `KOBO_ASSET_UID` / `KOBO_TOKEN` en `.streamlit/secrets.toml`.")
+        st.stop()
+    asset = kobo.get_asset(KOBO_UID)
+    if asset is None:
+        st.error("No encontré ese KOBO_ASSET_UID en Kobo. Verifica el UID y el token.")
+        st.stop()
+    responses = kobo.get_responses(KOBO_UID)
+    records = kobo.get_submissions(KOBO_UID)
+    source_title = asset.get("title") or "Encuesta de salida (Kobo)"
+    goal_total = (st.secrets.get("kobo_goals") or {}).get("total")
+
+    def compute_comp(df):
+        return kobo.completion_by_label(asset, records, df["response_id"].tolist())
+
 
 if responses.empty:
-    st.title("AMA · LÍNEA DE SALIDA · LAGO AGRIO")
+    st.title(APP_TITLE)
+    st.caption(f"{fuente}  ·  {source_title.upper()}")
     st.info("AÚN NO HAY RESPUESTAS")
     st.stop()
 
 
-# ── Sidebar ───────────────────────────────────────────────────────────────────
+# ── Sidebar · filtros ───────────────────────────────────────────────────────────
 
 with st.sidebar:
+    st.divider()
     st.markdown("### ▣ FILTROS")
 
-    # Colegio
-    colegio_options = ["TODOS LOS COLEGIOS"]
-    if "hidden_colegio" in responses.columns:
-        colegio_options += sorted(
-            [c for c in responses["hidden_colegio"].dropna().unique()]
+    # Ciudad (solo si la fuente la trae — p. ej. Kobo)
+    ciudad_filter = None
+    if "hidden_ciudad" in responses.columns:
+        ciudad_options = ["TODAS LAS CIUDADES"] + sorted(
+            responses["hidden_ciudad"].dropna().unique()
         )
+        ciudad_sel = st.selectbox("CIUDAD", ciudad_options)
+        ciudad_filter = None if ciudad_sel == "TODAS LAS CIUDADES" else ciudad_sel
+
+    # Colegio (cascada: opciones según la ciudad elegida)
+    pre = responses
+    if ciudad_filter and "hidden_ciudad" in pre.columns:
+        pre = pre[pre["hidden_ciudad"] == ciudad_filter]
+    colegio_options = ["TODOS LOS COLEGIOS"]
+    if "hidden_colegio" in pre.columns:
+        colegio_options += sorted(pre["hidden_colegio"].dropna().unique())
     colegio_label = st.selectbox("COLEGIO", colegio_options)
     colegio_filter = None if colegio_label == "TODOS LOS COLEGIOS" else colegio_label
 
@@ -83,7 +134,6 @@ with st.sidebar:
     )
 
     st.divider()
-    tz = ZoneInfo("America/Bogota")
     st.caption(f"UPDATED · {datetime.now(tz).strftime('%Y-%m-%d %H:%M')}")
 
 
@@ -91,18 +141,24 @@ with st.sidebar:
 
 df = responses.copy()
 df = df[df["submitted_at"].dt.date <= date_to]
+if ciudad_filter and "hidden_ciudad" in df.columns:
+    df = df[df["hidden_ciudad"] == ciudad_filter]
 if colegio_filter and "hidden_colegio" in df.columns:
     df = df[df["hidden_colegio"] == colegio_filter]
 
 
 # ── Header ────────────────────────────────────────────────────────────────────
 
-tz = ZoneInfo("America/Bogota")
-title = (form_def.get("title") or "AMA · LÍNEA DE SALIDA").upper()
-st.title(title)
-ctx = (colegio_filter or "TODOS LOS COLEGIOS").upper()
+st.title(APP_TITLE)
+ctx = []
+if ciudad_filter:
+    ctx.append(ciudad_filter.upper())
+ctx.append((colegio_filter or "TODOS LOS COLEGIOS").upper())
 rango = f"{min_date.strftime('%d/%m/%Y')} → {date_to.strftime('%d/%m/%Y')}"
-st.caption(f"{ctx}  ·  {rango}  ·  {datetime.now(tz).strftime('%H:%M:%S')} COT")
+st.caption(
+    f"{fuente} · {source_title.upper()}  ·  {' · '.join(ctx)}  ·  "
+    f"{rango}  ·  {datetime.now(tz).strftime('%H:%M:%S')} COT"
+)
 
 st.divider()
 
@@ -127,28 +183,30 @@ with tab1:
 
         total = len(df)
         hoy = (df["submitted_at"].dt.date == today_d).sum()
-        n_encuestadores = (
-            df["hidden_encuestador"].nunique()
-            if "hidden_encuestador" in df.columns
-            else 0
-        )
         ult_24h = (df["submitted_at"] >= last_24h).sum()
         ritmo = round(ult_24h / 24, 1)
+
+        # 3er KPI adaptativo: encuestadores (Typeform) o colegios (Kobo).
+        has_encuestador = "hidden_encuestador" in df.columns
+        if has_encuestador:
+            kpi3_label = "ENCUESTADORES"
+            kpi3_val = df["hidden_encuestador"].nunique()
+        else:
+            kpi3_label = "COLEGIOS"
+            kpi3_val = df["hidden_colegio"].nunique() if "hidden_colegio" in df.columns else 0
 
         kpi_cols = st.columns(4)
         kpi_cols[0].metric("RESPUESTAS TOTAL", total)
         kpi_cols[1].metric("HOY", int(hoy))
-        kpi_cols[2].metric("ENCUESTADORES", n_encuestadores)
+        kpi_cols[2].metric(kpi3_label, int(kpi3_val))
         kpi_cols[3].metric("RITMO · RESP/H 24H", ritmo)
 
         # ── Meta opcional ─────────────────────────────────────────────────────
-        goals = st.secrets.get("goals") or {}
-        meta_total = goals.get("total")
-        if meta_total:
-            pct = min(total / meta_total * 100, 100)
+        if goal_total:
+            pct = min(total / goal_total * 100, 100)
             st.progress(
                 pct / 100,
-                text=f"AVANCE GLOBAL · {total} / {meta_total}  ({pct:.1f}%)",
+                text=f"AVANCE GLOBAL · {total} / {goal_total}  ({pct:.1f}%)",
             )
 
         st.divider()
@@ -242,12 +300,17 @@ with tab1:
 
         st.divider()
 
-        # ── Ranking de encuestadores ──────────────────────────────────────────
-        if "hidden_encuestador" in df.columns:
-            st.subheader("RANKING · ENCUESTADORES")
+        # ── Ranking por colegio (ambas fuentes) ───────────────────────────────
+        if "hidden_colegio" in df.columns:
+            group_col, rank_title, first_hdr = "hidden_colegio", "RANKING · COLEGIOS", "COLEGIO"
+        else:
+            group_col = None
+
+        if group_col:
+            st.subheader(rank_title)
             st.caption("ORDENADO POR RESPUESTAS RECOLECTADAS")
 
-            grp = df.dropna(subset=["hidden_encuestador"]).groupby("hidden_encuestador")
+            grp = df.dropna(subset=[group_col]).groupby(group_col)
             rank_df = grp.agg(
                 respuestas=("response_id", "count"),
                 hoy=("submitted_at", lambda s: int((s.dt.date == today_d).sum())),
@@ -257,19 +320,20 @@ with tab1:
             rank_df = rank_df.sort_values("respuestas", ascending=False).head(50)
             rank_df["primera"] = rank_df["primera"].dt.strftime("%d/%m %H:%M")
             rank_df["ultima"] = rank_df["ultima"].dt.strftime("%d/%m %H:%M")
-            rank_df = rank_df.rename(columns={"hidden_encuestador": "encuestador"})
+            rank_df = rank_df.rename(columns={group_col: "dim"})
 
             st.markdown(
                 html_table(
                     rank_df,
                     col_defs=[
-                        ("encuestador", "ENCUESTADOR", "left"),
+                        ("dim", first_hdr, "left"),
                         ("respuestas", "RESPUESTAS", "right"),
                         ("hoy", "HOY", "right"),
                         ("primera", "PRIMERA", "right"),
                         ("ultima", "ÚLTIMA", "right"),
                     ],
                     medal_col=1,
+                    max_height=360,
                 ),
                 unsafe_allow_html=True,
             )
@@ -289,7 +353,7 @@ with tab2:
             "que solo aplican condicionalmente (branching)."
         )
 
-        comp = completion_by_question(form_def, answers, df["response_id"].tolist())
+        comp = compute_comp(df)
         if comp.empty:
             st.info("NO DATA")
         else:
@@ -371,6 +435,7 @@ with tab2:
                         ("completitud", "%", "right"),
                     ],
                     medal_col=2,
+                    max_height=360,
                 ),
                 unsafe_allow_html=True,
             )
