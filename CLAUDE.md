@@ -107,6 +107,26 @@ Necesitas `.streamlit/secrets.toml` con `TYPEFORM_TOKEN` + `FORM_ID` (+ `field_r
   de container (group, etc.), revisar.
 - **Cold start de Streamlit Cloud**: si nadie abre el link por horas, la app
   duerme. Primera carga después tarda ~15-20s.
+- **Iconos Material vs override de fuente**: el CSS de `theme.py` fuerza monospace
+  global con `!important` sobre `[class*="css"]`, lo que pisa la fuente de los iconos
+  Material Symbols de Streamlit y los muestra como **texto** (p. ej. la flecha de
+  colapsar el sidebar salía como "keyboard_double_arrow_left"). Hay una regla al final
+  de `_CSS` que restaura `font-family: 'Material Symbols Rounded'` para
+  `[data-testid="stIconMaterial"]`. Si agregas widgets nuevos con iconos que salgan
+  como texto, amplía ese selector.
+- **Tablas/charts largos → contenedores scrolleables, no estirar la página**:
+  `theme.py::html_table(..., max_height=360)` envuelve la tabla en un div scrolleable
+  con header sticky. Para gráficas Plotly altas (p. ej. completitud con ~108 preguntas)
+  usar `with st.container(height=...)` alrededor del `st.plotly_chart`. Mantener este
+  patrón si agregas tablas/charts que crezcan con los datos.
+- **`use_container_width` deprecado**: Streamlit (>=1.57 instalado) avisa que se
+  reemplaza por `width='stretch'`/`'content'` (deadline ya pasó: 2025-12-31). Hoy solo
+  warnings, no rompe. Migrar los `st.plotly_chart(..., use_container_width=True)` cuando
+  toque limpiar.
+- **`.venv` con shebang roto**: el proyecto se movió de `~/Desktop/Dev/AMA` a
+  `~/Documents/Dev/AMA`, así que el shebang de los scripts del venv apunta a una ruta
+  vieja y `streamlit run ...` directo falla. Workaround local: `.venv/bin/python -m
+  streamlit run dashboard/app.py`. Prod (Streamlit Cloud) no se afecta.
 
 ## Fuera de alcance hoy (siguiente fase)
 

@@ -165,7 +165,7 @@ st.divider()
 
 # ── Tabs ──────────────────────────────────────────────────────────────────────
 
-tab1, tab2 = st.tabs(["▣  AVANCE", "▣  COMPLETITUD POR PREGUNTA"])
+tab1, tab2, tab3 = st.tabs(["▣  AVANCE", "▣  COMPLETITUD POR PREGUNTA", "▣  ENCUESTA BOT"])
 
 
 # ════════════════════════════════════════════════════════════════════════════════
@@ -441,3 +441,199 @@ with tab2:
                 ),
                 unsafe_allow_html=True,
             )
+
+
+# ════════════════════════════════════════════════════════════════════════════════
+# TAB 3 — ENCUESTA BOT
+# ════════════════════════════════════════════════════════════════════════════════
+
+with tab3:
+    BOT_ASSET_UID = st.secrets.get("BOT_ASSET_UID")
+    if not BOT_ASSET_UID:
+        st.error("Falta `BOT_ASSET_UID` en `.streamlit/secrets.toml`.")
+    else:
+        # Obtener datos del bot
+        bot_asset = kobo.get_asset(BOT_ASSET_UID)
+        if bot_asset is None:
+            st.error("No se pudo cargar la encuesta del bot desde Kobo.")
+        else:
+            bot_records = kobo.get_submissions(BOT_ASSET_UID)
+
+            if not bot_records:
+                st.info("AÚN NO HAY RESPUESTAS EN LA ENCUESTA DEL BOT")
+            else:
+                import pandas as pd
+
+                # Convertir a DataFrame
+                bot_df = pd.DataFrame(bot_records)
+                bot_df["submitted_at"] = pd.to_datetime(bot_df["_submission_time"], utc=True).dt.tz_convert(tz)
+
+                # Aplicar filtro de fecha
+                bot_df = bot_df[bot_df["submitted_at"].dt.date <= date_to]
+
+                if bot_df.empty:
+                    st.info("NO HAY RESPUESTAS CON LOS FILTROS APLICADOS")
+                else:
+                    # ── KPIs ──────────────────────────────────────────────────────
+                    total_bot = len(bot_df)
+                    hoy_bot = (bot_df["submitted_at"].dt.date == today_d).sum()
+
+                    # Métricas de uso del bot
+                    usaron_bot = bot_df["_Has_usado_al_menos_una_vez_"].value_counts().get("s", 0)
+                    no_usaron = bot_df["_Has_usado_al_menos_una_vez_"].value_counts().get("no", 0)
+                    pct_uso = (usaron_bot / total_bot * 100) if total_bot > 0 else 0
+
+                    kpi_cols = st.columns(4)
+                    kpi_cols[0].metric("RESPUESTAS TOTAL", total_bot)
+                    kpi_cols[1].metric("HOY", int(hoy_bot))
+                    kpi_cols[2].metric("USARON EL BOT", int(usaron_bot))
+                    kpi_cols[3].metric("% USO", f"{pct_uso:.1f}%")
+
+                    st.divider()
+
+                    # ── Gráficas ──────────────────────────────────────────────────
+                    col_left, col_right = st.columns(2)
+
+                    with col_left:
+                        st.subheader("USO DEL BOT")
+                        uso_counts = bot_df["_Has_usado_al_menos_una_vez_"].value_counts()
+                        uso_labels = {"s": "SÍ USARON", "no": "NO USARON"}
+                        uso_df = pd.DataFrame({
+                            "respuesta": [uso_labels.get(k, k) for k in uso_counts.index],
+                            "n": uso_counts.values
+                        })
+
+                        fig = go.Figure(
+                            go.Bar(
+                                x=uso_df["n"],
+                                y=uso_df["respuesta"],
+                                orientation="h",
+                                marker=dict(
+                                    color=[GREEN if r == "SÍ USARON" else RED for r in uso_df["respuesta"]],
+                                    line=dict(color="#080808", width=0.5)
+                                ),
+                                text=uso_df["n"],
+                                textposition="outside",
+                                textfont=dict(family="IBM Plex Mono, monospace", color=AMBER, size=11),
+                                hovertemplate="<b>%{y}</b><br>%{x} respuestas<extra></extra>",
+                            )
+                        )
+                        fig.update_layout(
+                            **base_layout(
+                                yaxis=dict(showgrid=False, tickfont=dict(family="IBM Plex Mono, monospace", color="#888", size=10)),
+                                xaxis=dict(showgrid=False, tickfont=dict(family="IBM Plex Mono, monospace", color="#888", size=10)),
+                                height=200,
+                                margin=dict(l=0, r=40, t=10, b=0),
+                            )
+                        )
+                        st.plotly_chart(fig, use_container_width=True)
+
+                    with col_right:
+                        st.subheader("RESPUESTAS POR CIUDAD")
+                        if "Ciudad" in bot_df.columns:
+                            ciudad_counts = bot_df["Ciudad"].fillna("(SIN DATO)").value_counts().reset_index()
+                            ciudad_counts.columns = ["ciudad", "n"]
+                            ciudad_counts = ciudad_counts.sort_values("n", ascending=True)
+
+                            fig = go.Figure(
+                                go.Bar(
+                                    x=ciudad_counts["n"],
+                                    y=ciudad_counts["ciudad"],
+                                    orientation="h",
+                                    marker=dict(color=CYAN, line=dict(color="#080808", width=0.5)),
+                                    text=ciudad_counts["n"],
+                                    textposition="outside",
+                                    textfont=dict(family="IBM Plex Mono, monospace", color=AMBER, size=11),
+                                    hovertemplate="<b>%{y}</b><br>%{x} respuestas<extra></extra>",
+                                )
+                            )
+                            fig.update_layout(
+                                **base_layout(
+                                    yaxis=dict(showgrid=False, tickfont=dict(family="IBM Plex Mono, monospace", color="#888", size=10)),
+                                    xaxis=dict(showgrid=False, tickfont=dict(family="IBM Plex Mono, monospace", color="#888", size=10)),
+                                    height=max(200, 40 * len(ciudad_counts) + 60),
+                                    margin=dict(l=0, r=40, t=10, b=0),
+                                )
+                            )
+                            st.plotly_chart(fig, use_container_width=True)
+                        else:
+                            st.info("NO DATA")
+
+                    st.divider()
+
+                    # ── Problemas reportados (solo quienes usaron) ────────────────
+                    usuarios_bot = bot_df[bot_df["_Has_usado_al_menos_una_vez_"] == "s"]
+                    if not usuarios_bot.empty:
+                        st.subheader("EXPERIENCIA DE USUARIOS")
+
+                        col_a, col_b = st.columns(2)
+
+                        with col_a:
+                            st.caption("¿HAN TENIDO PROBLEMAS?")
+                            if "_Has_tenido_problemas_usando_e" in usuarios_bot.columns:
+                                prob_counts = usuarios_bot["_Has_tenido_problemas_usando_e"].value_counts()
+                                prob_labels = {"s": "SÍ", "no": "NO"}
+                                prob_df = pd.DataFrame({
+                                    "respuesta": [prob_labels.get(k, k) for k in prob_counts.index],
+                                    "n": prob_counts.values
+                                })
+
+                                fig = go.Figure(
+                                    go.Bar(
+                                        x=prob_df["n"],
+                                        y=prob_df["respuesta"],
+                                        orientation="h",
+                                        marker=dict(
+                                            color=[RED if r == "SÍ" else GREEN for r in prob_df["respuesta"]],
+                                            line=dict(color="#080808", width=0.5)
+                                        ),
+                                        text=prob_df["n"],
+                                        textposition="outside",
+                                        textfont=dict(family="IBM Plex Mono, monospace", color=AMBER, size=11),
+                                        hovertemplate="<b>%{y}</b><br>%{x} respuestas<extra></extra>",
+                                    )
+                                )
+                                fig.update_layout(
+                                    **base_layout(
+                                        yaxis=dict(showgrid=False, tickfont=dict(family="IBM Plex Mono, monospace", color="#888", size=10)),
+                                        xaxis=dict(showgrid=False, tickfont=dict(family="IBM Plex Mono, monospace", color="#888", size=10)),
+                                        height=180,
+                                        margin=dict(l=0, r=40, t=10, b=0),
+                                    )
+                                )
+                                st.plotly_chart(fig, use_container_width=True)
+
+                        with col_b:
+                            st.caption("¿RECOMENDARÍAN EL BOT?")
+                            if "_Recomendar_a_el_Cha_bot_a_un_compa_ero_a" in usuarios_bot.columns:
+                                rec_counts = usuarios_bot["_Recomendar_a_el_Cha_bot_a_un_compa_ero_a"].value_counts()
+                                rec_labels = {"s": "SÍ", "no": "NO"}
+                                rec_df = pd.DataFrame({
+                                    "respuesta": [rec_labels.get(k, k) for k in rec_counts.index],
+                                    "n": rec_counts.values
+                                })
+
+                                fig = go.Figure(
+                                    go.Bar(
+                                        x=rec_df["n"],
+                                        y=rec_df["respuesta"],
+                                        orientation="h",
+                                        marker=dict(
+                                            color=[GREEN if r == "SÍ" else RED for r in rec_df["respuesta"]],
+                                            line=dict(color="#080808", width=0.5)
+                                        ),
+                                        text=rec_df["n"],
+                                        textposition="outside",
+                                        textfont=dict(family="IBM Plex Mono, monospace", color=AMBER, size=11),
+                                        hovertemplate="<b>%{y}</b><br>%{x} respuestas<extra></extra>",
+                                    )
+                                )
+                                fig.update_layout(
+                                    **base_layout(
+                                        yaxis=dict(showgrid=False, tickfont=dict(family="IBM Plex Mono, monospace", color="#888", size=10)),
+                                        xaxis=dict(showgrid=False, tickfont=dict(family="IBM Plex Mono, monospace", color="#888", size=10)),
+                                        height=180,
+                                        margin=dict(l=0, r=40, t=10, b=0),
+                                    )
+                                )
+                                st.plotly_chart(fig, use_container_width=True)
