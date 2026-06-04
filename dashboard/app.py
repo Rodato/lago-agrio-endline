@@ -536,6 +536,10 @@ with tab4:
         by_col = by_col.sort_values("pct", ascending=True)
 
         st.subheader("COBERTURA POR COLEGIO")
+        st.caption(
+            "% de la línea base (Tratamiento) re-alcanzado en salida. La etiqueta muestra "
+            "% · alcanzados/meta. Color: ROJO <30% · ÁMBAR 30–70% · VERDE ≥70%."
+        )
 
         def _color(p: float) -> str:
             if p < 30:
@@ -544,40 +548,43 @@ with tab4:
                 return AMBER
             return GREEN
 
-        fig = go.Figure()
-        fig.add_trace(
+        by_col = by_col.sort_values("pct", ascending=True)
+        fig = go.Figure(
             go.Bar(
-                x=by_col["alcanzados"],
+                x=by_col["pct"],
                 y=by_col["colegio"],
                 orientation="h",
-                name="ALCANZADOS",
-                marker=dict(color=[_color(p) for p in by_col["pct"]], line=dict(color="#080808", width=0.5)),
-                text=[f"{a}/{m} · {p:.0f}%" for a, m, p in zip(by_col["alcanzados"], by_col["meta"], by_col["pct"])],
+                marker=dict(
+                    color=[_color(p) for p in by_col["pct"]],
+                    line=dict(color="#080808", width=0.5),
+                ),
+                text=[
+                    f"{p:.0f}%  ·  {a}/{m}"
+                    for a, m, p in zip(by_col["alcanzados"], by_col["meta"], by_col["pct"])
+                ],
                 textposition="outside",
-                textfont=dict(family="IBM Plex Mono, monospace", color="#C8C8C8", size=11),
-                hovertemplate="<b>%{y}</b><br>%{x} alcanzados<extra></extra>",
-            )
-        )
-        fig.add_trace(
-            go.Bar(
-                x=by_col["faltan"],
-                y=by_col["colegio"],
-                orientation="h",
-                name="FALTAN",
-                marker=dict(color="#241a00", line=dict(color="#080808", width=0.5)),
-                hovertemplate="<b>%{y}</b><br>%{x} faltan<extra></extra>",
+                textfont=dict(family="IBM Plex Mono, monospace", color="#E8E8E8", size=13),
+                cliponaxis=False,
+                customdata=by_col[["alcanzados", "meta"]],
+                hovertemplate="<b>%{y}</b><br>%{customdata[0]}/%{customdata[1]} alcanzados · %{x:.1f}%<extra></extra>",
             )
         )
         fig.update_layout(
             **base_layout(
-                barmode="stack",
-                xaxis=dict(title="ESTUDIANTES DE LÍNEA BASE", showgrid=False,
-                           tickfont=dict(family="IBM Plex Mono, monospace", color="#888", size=10)),
-                yaxis=dict(showgrid=False,
-                           tickfont=dict(family="IBM Plex Mono, monospace", color="#888", size=10)),
-                legend=dict(orientation="h", x=0.5, xanchor="center", y=1.08, bgcolor="rgba(0,0,0,0)"),
-                height=max(260, 46 * len(by_col) + 80),
-                margin=dict(l=0, r=80, t=20, b=10),
+                xaxis=dict(
+                    title="% DE COBERTURA",
+                    range=[0, 100],
+                    ticksuffix="%",
+                    showgrid=True,
+                    gridcolor="#151515",
+                    tickfont=dict(family="IBM Plex Mono, monospace", color="#888", size=10),
+                ),
+                yaxis=dict(
+                    showgrid=False,
+                    tickfont=dict(family="IBM Plex Mono, monospace", color="#C8C8C8", size=11),
+                ),
+                height=max(280, 52 * len(by_col) + 80),
+                margin=dict(l=0, r=120, t=20, b=10),
             )
         )
         st.plotly_chart(fig, use_container_width=True)
