@@ -101,7 +101,8 @@ def main() -> None:
         ["response_id", "fuente", "ciudad", "colegio", "grado", "nombre", "documento", "telefono"]
     ].to_csv(OUT_DIR / "endline_no_en_base.csv", index=False)
 
-    # 4) Llaves HMAC para el dashboard live (si hay salt)
+    # 4) Llaves HMAC para el dashboard live (si hay salt). Parquet (Streamlit ya trae
+    #    pyarrow como dependencia, así que está disponible en Streamlit Cloud).
     salt = os.environ.get("COVERAGE_SALT") or st.secrets.get("COVERAGE_SALT")
     if salt:
         cov.build_baseline_keys(baseline, salt).to_parquet(
