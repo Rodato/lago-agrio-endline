@@ -169,6 +169,98 @@ def get_answers(
     return df
 
 
+def _flatten_fields(fields: list[dict]) -> list[dict]:
+    """Aplana los fields del form (Typeform anida preguntas dentro de `group`)."""
+    out: list[dict] = []
+    for f in fields or []:
+        out.append(f)
+        sub = (f.get("properties") or {}).get("fields")
+        if sub:
+            out.extend(_flatten_fields(sub))
+    return out
+
+
+def _classify_identity(title: str) -> str | None:
+    """Mapea el título de una pregunta a un rol de identidad, o None si no aplica."""
+    t = (title or "").strip().lower()
+    if not t:
+        return None
+    if "apellido" in t:
+        return "apellido2" if "2" in t else "apellido1"
+    if "nombre" in t:
+        return "nombre2" if "2" in t else "nombre1"
+    if any(k in t for k in ("documento", "dni", "cédula", "cedula", "identidad")):
+        return "documento"
+    if "teléfono" in t or "telefono" in t or "celular" in t:
+        return "telefono"
+    if "correo" in t or "email" in t or "e-mail" in t:
+        return "correo"
+    return None
+
+
+def get_identities(form_id: str) -> pd.DataFrame:
+    """Identidad por respuesta del endline Typeform (Lago Agrio), mismo esquema que
+    `kobo.get_identities`: response_id, submitted_at, ciudad, colegio, grado, nombre,
+    documento, telefono, correo, fuente.
+
+    Localiza las preguntas de identidad por título (el form no tiene hidden fields
+    nativos). El colegio se toma de `hidden_colegio` (mapeado vía `field_refs` en
+    secrets); la ciudad es fija Lago Agrio. Devuelve strings crudos."""
+    form_def = get_form_definition(form_id)
+    if form_def is None:
+        return pd.DataFrame()
+    responses, answers = _fetch_all(form_id)
+    if responses.empty:
+        return pd.DataFrame()
+
+    # ref -> rol de identidad, por título de la pregunta
+    ref_role: dict[str, str] = {}
+    for f in _flatten_fields(form_def.get("fields") or []):
+        role = _classify_identity(f.get("title", ""))
+        if role and f.get("ref"):
+            ref_role[f["ref"]] = role
+
+    # valor (texto preferente) por (response_id, rol)
+    by_rid: dict[str, dict[str, str]] = {}
+    if not answers.empty:
+        ans = answers[answers["field_ref"].isin(ref_role)]
+        for _, a in ans.iterrows():
+            role = ref_role[a["field_ref"]]
+            val = a.get("value_text")
+            if val is None or (isinstance(val, float) and pd.isna(val)):
+                val = a.get("value_choice") or a.get("value_number")
+            if val is None or (isinstance(val, float) and pd.isna(val)):
+                continue
+            by_rid.setdefault(a["response_id"], {})[role] = str(val).strip()
+
+    colegio_col = "hidden_colegio" if "hidden_colegio" in responses.columns else None
+    rows: list[dict] = []
+    for _, r in responses.iterrows():
+        rid = r["response_id"]
+        vals = by_rid.get(rid, {})
+        partes = [vals.get(k) for k in ("nombre1", "nombre2", "apellido1", "apellido2")]
+        nombre = " ".join(p for p in partes if p) or None
+        rows.append(
+            {
+                "response_id": rid,
+                "submitted_at": r.get("submitted_at"),
+                "ciudad": "lago_agrio",
+                "colegio": r.get(colegio_col) if colegio_col else None,
+                "grado": None,
+                "nombre": nombre,
+                "documento": vals.get("documento"),
+                "telefono": vals.get("telefono"),
+                "correo": vals.get("correo"),
+                "fuente": "typeform",
+            }
+        )
+
+    df = pd.DataFrame(rows)
+    if not df.empty:
+        df["submitted_at"] = pd.to_datetime(df["submitted_at"], utc=True, errors="coerce")
+    return df
+
+
 def latest_submitted_at(form_id: str) -> datetime | None:
     responses, _ = _fetch_all(form_id)
     if responses.empty or "submitted_at" not in responses.columns:

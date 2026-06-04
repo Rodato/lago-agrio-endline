@@ -31,13 +31,18 @@ Sin Supabase, sin webhooks, sin Airtable. Esa decisión fue intencional — ver
 
 ```
 dashboard/
-├── app.py                  # Selector de fuente + dos tabs: AVANCE y COMPLETITUD
+├── app.py                  # Selector de fuente + tabs: AVANCE, COMPLETITUD, COBERTURA, BOT
+├── data/
+│   └── baseline_keys.parquet  # Llaves HMAC de la base (sin PII) para la cobertura live
 └── lib/
-    ├── db.py               # Cliente Typeform + cache 30s + paginación
-    ├── kobo.py             # Cliente KoboToolbox + cache 30s + completitud por label
+    ├── db.py               # Cliente Typeform + cache 30s + paginación + get_identities
+    ├── kobo.py             # Cliente KoboToolbox + cache 30s + completitud + get_identities
     ├── normalize.py        # form_response Typeform → (response_row, [answer_rows])
     ├── completion.py       # % completitud por pregunta Typeform (maneja matrices)
+    ├── coverage.py         # Motor de cruce base↔endline (normalización, match, HMAC)
     └── theme.py            # CSS Bloomberg + base_layout() Plotly + html_table()
+scripts/
+└── cruce_cobertura.py      # CLI: reporte privado de cobertura (PII) + parquet de llaves
 ```
 
 **Vistas agnósticas de la fuente**: cada rama (Typeform / Kobo) produce un
@@ -128,15 +133,45 @@ Necesitas `.streamlit/secrets.toml` con `TYPEFORM_TOKEN` + `FORM_ID` (+ `field_r
   vieja y `streamlit run ...` directo falla. Workaround local: `.venv/bin/python -m
   streamlit run dashboard/app.py`. Prod (Streamlit Cloud) no se afecta.
 
+## Cobertura · versus línea de base (tab COBERTURA)
+
+Responde lo esencial del endline: de los que medimos en la **línea de base** (grupo
+**Tratamiento**, 1.683 personas), ¿a cuántos re-alcanzamos y **quiénes faltan**.
+
+- **Base**: `~/Documents/Dev/AMA/Preprocesamiento/outputs/AMA_encuesta_unificada.csv`
+  (Iquitos+Lago Agrio), filtrada a `META_04=='Tratamiento'`. Los colegios de cada grupo
+  son fijos (ver `EncuestaSalida/koboreferenceforms/colegios_grados_iquitosylagoagrio.md`);
+  los labels de colegio del endline **coinciden exactos** con `DEM_05`.
+- **Identidad endline**: `kobo.get_identities()` (Iquitos+Lago Agrio, grupo
+  `datos_personales/`) + `db.get_identities()` (Typeform Lago Agrio, por título de
+  pregunta). Se unen y deduplican en `coverage.build_endline_identities`.
+- **Match en cascada** (`coverage.match`): documento normalizado → nombre+colegio
+  exacto → nombre+colegio fuzzy (`difflib`, ≥0.88) → teléfono. El documento solo está
+  en ~70% de la base, por eso el fuzzy de nombre es imprescindible.
+- **PII**: la lista nominal de faltantes (nombre, documento, teléfono) **nunca toca el
+  dashboard público**. Vive solo en `outputs/` (gitignored). El dashboard lee
+  `data/baseline_keys.parquet`, que contiene **HMAC** de las llaves (salt
+  `COVERAGE_SALT`, no commiteado) — sin texto plano. El tab cruza esos hashes contra el
+  endline live: es una **cota mínima** (solo match exacto, sin fuzzy/teléfono).
+
+### Regenerar el cruce
+```bash
+COVERAGE_SALT=... .venv/bin/python scripts/cruce_cobertura.py
+```
+Produce (en `outputs/`, gitignored): `faltantes.csv` (PII, para campo),
+`cobertura_resumen.csv` (agregado anónimo), `endline_no_en_base.csv` (QA: endline en
+colegios Tratamiento sin match = posibles nuevos / IDs sucios). Y reescribe
+`dashboard/data/baseline_keys.parquet`. **El salt debe ser el mismo en el script y en
+los secrets del dashboard** (local + Streamlit Cloud); si lo rotas, regenera el parquet.
+
 ## Fuera de alcance hoy (siguiente fase)
 
 Si el usuario pide algo de esto, queda claro que es trabajo nuevo:
 - Distribuciones **P31-P46 en vivo** (reusar `src/variables_encuesta_informe.py`
   y `src/generar_graficas_informe.py` del repo `Preprocesamiento/`).
-- Comparación **baseline vs endline** (cruzar con
-  `outputs/AMA_encuesta_LagoAgrio_cleaned.csv` del baseline).
 - **Export a CSV** con el formato del informe del baseline para alimentar el
   pipeline de análisis final.
+- **Análisis de cambio** entrada→salida por variable (impacto), distinto de cobertura.
 - Notificaciones (Slack/email) por meta cumplida o anomalías.
 - Normalización fuzzy de nombres de encuestadores.
 

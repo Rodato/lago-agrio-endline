@@ -121,6 +121,13 @@ def get_asset(uid: str) -> dict[str, Any] | None:
             colegio_map.update(choices.get(list_name, {}))
     ciudad_map = dict(choices.get(list_by_name.get("ciudad", ""), {}))
 
+    # grado_final es otro calculate (coalesce de las ~15 variantes grado_<ciudad>_<colegio>);
+    # su valor (p. ej. "4_A") se etiqueta con las listas grados_*. Unimos todas.
+    grado_map: dict[str, str] = {}
+    for qname, list_name in list_by_name.items():
+        if qname.startswith("grado_") and list_name:
+            grado_map.update(choices.get(list_name, {}))
+
     return {
         "uid": uid,
         "title": form.get("name") or "Encuesta de salida AMA",
@@ -128,6 +135,7 @@ def get_asset(uid: str) -> dict[str, Any] | None:
         "questions": questions,
         "colegio_value_to_label": colegio_map,
         "ciudad_value_to_label": ciudad_map,
+        "grado_value_to_label": grado_map,
     }
 
 
@@ -183,6 +191,75 @@ def get_responses(uid: str) -> pd.DataFrame:
 def get_submissions(uid: str) -> list[dict[str, Any]]:
     _, records = _fetch(uid)
     return records
+
+
+def _suffix(rec: dict[str, Any], name: str) -> Any:
+    """Valor de un campo por su `name` de XLSForm, tolerando el prefijo de grupo.
+
+    Los envíos de Kobo usan claves `grupo/pregunta` (`datos_personales/nombre1`), pero
+    el anidamiento puede variar. Busca coincidencia exacta y, si no, cualquier clave que
+    termine en `/<name>`. No usamos `a or b` para coalescer (NaN es truthy)."""
+    if name in rec and _nonempty(rec[name]):
+        return rec[name]
+    tail = "/" + name
+    for k, v in rec.items():
+        if k.endswith(tail) and _nonempty(v):
+            return v
+    return None
+
+
+def get_identities(uid: str) -> pd.DataFrame:
+    """Identidad por envío del endline Kobo, para cruzar contra la línea de base.
+
+    Columnas: response_id, submitted_at, ciudad, colegio, grado, nombre, documento,
+    telefono, correo, fuente. Devuelve strings crudos (sin normalizar) — la
+    normalización y el match viven en `coverage.py`. Los datos personales ya llegan en
+    los `records`; aquí solo los exponemos.
+    """
+    asset = get_asset(uid) or {}
+    colegio_map = asset.get("colegio_value_to_label") or {}
+    grado_map = asset.get("grado_value_to_label") or {}
+    _, records = _fetch(uid)
+
+    rows: list[dict[str, Any]] = []
+    for rec in records:
+        partes = [
+            _suffix(rec, "nombre1"),
+            _suffix(rec, "nombre2"),
+            _suffix(rec, "apellido1"),
+            _suffix(rec, "apellido2"),
+        ]
+        nombre = " ".join(str(p).strip() for p in partes if _nonempty(p)) or None
+
+        colegio_code = (
+            _suffix(rec, "colegio_final")
+            or _suffix(rec, "colegio_iquitos")
+            or _suffix(rec, "colegio_lagoagrio")
+        )
+        colegio = colegio_map.get(colegio_code, colegio_code) if colegio_code else None
+
+        grado_code = _suffix(rec, "grado_final")
+        grado = grado_map.get(grado_code, grado_code) if grado_code else None
+
+        rows.append(
+            {
+                "response_id": _rid(rec),
+                "submitted_at": rec.get("_submission_time"),
+                "ciudad": _suffix(rec, "ciudad"),  # código 'iquitos' / 'lago_agrio'
+                "colegio": colegio,
+                "grado": grado,
+                "nombre": nombre,
+                "documento": _suffix(rec, "documento_identidad"),
+                "telefono": _suffix(rec, "telefono"),
+                "correo": _suffix(rec, "correo"),
+                "fuente": "kobo",
+            }
+        )
+
+    df = pd.DataFrame(rows)
+    if not df.empty:
+        df["submitted_at"] = pd.to_datetime(df["submitted_at"], utc=True, errors="coerce")
+    return df
 
 
 def completion_by_label(

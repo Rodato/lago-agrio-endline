@@ -20,7 +20,8 @@ sys.path.insert(0, str(Path(__file__).parent))
 
 from lib import kobo
 from lib.completion import completion_by_question
-from lib.db import get_answers, get_form_definition, get_responses
+from lib.coverage import build_endline_identities, coverage_from_keys
+from lib.db import get_answers, get_form_definition, get_identities, get_responses
 from lib.theme import AMBER, CHART_COLORS, CYAN, GREEN, RED, base_layout, html_table, inject_css
 
 
@@ -36,6 +37,39 @@ inject_css()
 st_autorefresh(interval=30 * 1000, key="global_refresh")
 
 tz = ZoneInfo("America/Bogota")
+
+BASELINE_KEYS_PATH = Path(__file__).parent / "data" / "baseline_keys.parquet"
+
+
+@st.cache_data(ttl=30, show_spinner="Cruzando endline con línea de base…")
+def load_coverage() -> dict | None:
+    """Cobertura live (sin PII): llaves HMAC de la base vs endline actual.
+
+    Lee `data/baseline_keys.parquet` (hasheado, generado por scripts/cruce_cobertura.py)
+    y lo cruza contra la identidad live de Kobo + Typeform. Es una **cota inferior**
+    (solo match exacto de documento o nombre+colegio); la cifra completa con fuzzy +
+    teléfono y la lista nominal de faltantes viven en el reporte privado.
+    """
+    import pandas as pd
+
+    if not BASELINE_KEYS_PATH.exists():
+        return {"error": "no_parquet"}
+    salt = st.secrets.get("COVERAGE_SALT")
+    if not salt:
+        return {"error": "no_salt"}
+
+    keys = pd.read_parquet(BASELINE_KEYS_PATH)
+    frames = []
+    uid = st.secrets.get("KOBO_ASSET_UID")
+    if uid and st.secrets.get("KOBO_TOKEN"):
+        frames.append(kobo.get_identities(uid))
+    fid = st.secrets.get("FORM_ID")
+    if fid and st.secrets.get("TYPEFORM_TOKEN"):
+        frames.append(get_identities(fid))
+    endline = build_endline_identities(*frames)
+    cov_df = coverage_from_keys(keys, endline, salt)
+    mtime = datetime.fromtimestamp(BASELINE_KEYS_PATH.stat().st_mtime, tz)
+    return {"coverage": cov_df, "endline_n": len(endline), "base_mtime": mtime}
 
 
 # ── Selector de fuente ──────────────────────────────────────────────────────────
@@ -165,7 +199,9 @@ st.divider()
 
 # ── Tabs ──────────────────────────────────────────────────────────────────────
 
-tab1, tab2, tab3 = st.tabs(["▣  AVANCE", "▣  COMPLETITUD POR PREGUNTA", "▣  ENCUESTA BOT"])
+tab1, tab2, tab4, tab3 = st.tabs(
+    ["▣  AVANCE", "▣  COMPLETITUD POR PREGUNTA", "▣  COBERTURA vs LÍNEA BASE", "▣  ENCUESTA BOT"]
+)
 
 
 # ════════════════════════════════════════════════════════════════════════════════
@@ -441,6 +477,142 @@ with tab2:
                 ),
                 unsafe_allow_html=True,
             )
+
+
+# ════════════════════════════════════════════════════════════════════════════════
+# TAB COBERTURA — VERSUS LÍNEA DE BASE (solo grupo Tratamiento)
+# ════════════════════════════════════════════════════════════════════════════════
+
+with tab4:
+    st.subheader("COBERTURA DEL ENDLINE · ¿A CUÁNTOS DE LA LÍNEA BASE RE-ALCANZAMOS?")
+    st.caption(
+        "Universo: grupo TRATAMIENTO de la línea de base. Cruce live por documento o "
+        "nombre+colegio (match exacto) contra Kobo + Typeform. Es una COTA MÍNIMA — el "
+        "reporte privado (scripts/cruce_cobertura.py) añade match aproximado + teléfono "
+        "y la lista nominal de quiénes faltan."
+    )
+
+    cobertura = load_coverage()
+    if cobertura is None or cobertura.get("error") == "no_parquet":
+        st.warning(
+            "No encontré `dashboard/data/baseline_keys.parquet`. Genéralo corriendo "
+            "`.venv/bin/python scripts/cruce_cobertura.py` (con `COVERAGE_SALT` configurado)."
+        )
+    elif cobertura.get("error") == "no_salt":
+        st.warning("Falta `COVERAGE_SALT` en `.streamlit/secrets.toml` (debe ser el mismo "
+                   "con que se generó el parquet).")
+    else:
+        cov_df = cobertura["coverage"]
+        meta = len(cov_df)
+        alcanzados = int(cov_df["alcanzado"].sum())
+        faltan = meta - alcanzados
+        pct = (alcanzados / meta * 100) if meta else 0
+
+        kpi_cols = st.columns(4)
+        kpi_cols[0].metric("META · TRATAMIENTO", meta)
+        kpi_cols[1].metric("ALCANZADOS (LIVE)", alcanzados)
+        kpi_cols[2].metric("% COBERTURA", f"{pct:.1f}%")
+        kpi_cols[3].metric("FALTAN", faltan)
+
+        st.progress(pct / 100, text=f"COBERTURA GLOBAL · {alcanzados} / {meta}  ({pct:.1f}%)")
+
+        # Por ciudad
+        ciudad_cols = st.columns(2)
+        for i, (ciu, sub) in enumerate(cov_df.groupby("ciudad")):
+            a, m = int(sub["alcanzado"].sum()), len(sub)
+            p = (a / m * 100) if m else 0
+            ciudad_cols[i % 2].metric(f"{ciu.replace('_', ' ').upper()}", f"{a}/{m}", f"{p:.1f}%")
+
+        st.divider()
+
+        # ── Cobertura por colegio ──────────────────────────────────────────────
+        by_col = (
+            cov_df.groupby(["ciudad", "colegio"])
+            .agg(meta=("alcanzado", "size"), alcanzados=("alcanzado", "sum"))
+            .reset_index()
+        )
+        by_col["faltan"] = by_col["meta"] - by_col["alcanzados"]
+        by_col["pct"] = (by_col["alcanzados"] / by_col["meta"] * 100).round(1)
+        by_col = by_col.sort_values("pct", ascending=True)
+
+        st.subheader("COBERTURA POR COLEGIO")
+
+        def _color(p: float) -> str:
+            if p < 30:
+                return RED
+            if p < 70:
+                return AMBER
+            return GREEN
+
+        fig = go.Figure()
+        fig.add_trace(
+            go.Bar(
+                x=by_col["alcanzados"],
+                y=by_col["colegio"],
+                orientation="h",
+                name="ALCANZADOS",
+                marker=dict(color=[_color(p) for p in by_col["pct"]], line=dict(color="#080808", width=0.5)),
+                text=[f"{a}/{m} · {p:.0f}%" for a, m, p in zip(by_col["alcanzados"], by_col["meta"], by_col["pct"])],
+                textposition="outside",
+                textfont=dict(family="IBM Plex Mono, monospace", color="#C8C8C8", size=11),
+                hovertemplate="<b>%{y}</b><br>%{x} alcanzados<extra></extra>",
+            )
+        )
+        fig.add_trace(
+            go.Bar(
+                x=by_col["faltan"],
+                y=by_col["colegio"],
+                orientation="h",
+                name="FALTAN",
+                marker=dict(color="#241a00", line=dict(color="#080808", width=0.5)),
+                hovertemplate="<b>%{y}</b><br>%{x} faltan<extra></extra>",
+            )
+        )
+        fig.update_layout(
+            **base_layout(
+                barmode="stack",
+                xaxis=dict(title="ESTUDIANTES DE LÍNEA BASE", showgrid=False,
+                           tickfont=dict(family="IBM Plex Mono, monospace", color="#888", size=10)),
+                yaxis=dict(showgrid=False,
+                           tickfont=dict(family="IBM Plex Mono, monospace", color="#888", size=10)),
+                legend=dict(orientation="h", x=0.5, xanchor="center", y=1.08, bgcolor="rgba(0,0,0,0)"),
+                height=max(260, 46 * len(by_col) + 80),
+                margin=dict(l=0, r=80, t=20, b=10),
+            )
+        )
+        st.plotly_chart(fig, use_container_width=True)
+
+        st.divider()
+
+        # ── Tabla por colegio ──────────────────────────────────────────────────
+        st.subheader("DETALLE POR COLEGIO")
+        tbl = by_col.sort_values(["ciudad", "pct"]).copy()
+        tbl["ciudad"] = tbl["ciudad"].str.replace("_", " ").str.upper()
+        tbl["cobertura"] = tbl["pct"].map(lambda p: f"{p:.1f}%")
+        tbl["frac"] = tbl["alcanzados"].astype(str) + " / " + tbl["meta"].astype(str)
+        st.markdown(
+            html_table(
+                tbl,
+                col_defs=[
+                    ("ciudad", "CIUDAD", "left"),
+                    ("colegio", "COLEGIO", "left"),
+                    ("frac", "ALCANZADOS", "right"),
+                    ("faltan", "FALTAN", "right"),
+                    ("cobertura", "%", "right"),
+                ],
+                max_height=360,
+            ),
+            unsafe_allow_html=True,
+        )
+
+        base_mtime = cobertura.get("base_mtime")
+        sello = base_mtime.strftime("%d/%m/%Y %H:%M") if base_mtime else "—"
+        st.caption(
+            f"Endline live: {cobertura['endline_n']} identidades únicas (Kobo + Typeform). "
+            f"Llaves de base generadas: {sello}. "
+            "Sin nombres ni documentos en esta vista — la lista nominal de faltantes está "
+            "solo en el reporte privado."
+        )
 
 
 # ════════════════════════════════════════════════════════════════════════════════
