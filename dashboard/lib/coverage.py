@@ -59,13 +59,28 @@ def _strip_accents(s: str) -> str:
     )
 
 
+def _is_placeholder_doc(digits: str) -> bool:
+    """Documento centinela que el encuestador tipea cuando no tiene la cédula real.
+
+    Ej.: 11111111 (199 casos), 12345678, 99999999999, 123456. No son identificadores:
+    si los tratáramos como documento, el dedup colapsaría personas distintas que
+    comparten el mismo relleno y se perderían respuestas reales del endline."""
+    if len(set(digits)) == 1:  # 11111111, 99999999, 0000…
+        return True
+    if digits in "123456789012345" or digits in "543210987654321":  # 12345678, 123456…
+        return True
+    return False
+
+
 def norm_doc(value) -> str | None:
-    """Documento → solo dígitos, sin ceros a la izquierda. None si es muy corto."""
+    """Documento → solo dígitos, sin ceros a la izquierda. None si es muy corto o centinela."""
     if value is None or (isinstance(value, float) and pd.isna(value)):
         return None
     digits = re.sub(r"\D", "", str(value))
     digits = digits.lstrip("0")
-    return digits if len(digits) >= 5 else None
+    if len(digits) < 5 or _is_placeholder_doc(digits):
+        return None
+    return digits
 
 
 def norm_phone(value) -> str | None:
@@ -170,9 +185,10 @@ def build_endline_identities(*sources: pd.DataFrame) -> pd.DataFrame:
     end["colegio"] = end["colegio"].map(display_colegio)
     end = _add_norm_cols(end)
     def _pkey(r):
-        if r["ndoc"]:
+        # isinstance, no `if v`: NaN de pandas es truthy y colapsaría todo a una llave.
+        if isinstance(r["ndoc"], str) and r["ndoc"]:
             return r["ndoc"]
-        if r["nname"] and r["ncolegio"]:
+        if isinstance(r["nname"], str) and r["nname"] and isinstance(r["ncolegio"], str) and r["ncolegio"]:
             return f"{r['nname']}|{r['ncolegio']}"
         return f"rid:{r['response_id']}"  # sin llaves → no colapsar con otros
     end["person_key"] = end.apply(_pkey, axis=1)
